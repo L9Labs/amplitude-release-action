@@ -1,0 +1,134 @@
+name: 'Amplitude Release'
+description: 'Track releases in Amplitude via the Releases API (reusable GitHub Action for the Marketplace)'
+author: 'Skyway'
+branding:
+  icon: 'bar-chart-2'
+  color: 'blue'
+
+inputs:
+  amplitude-api-key:
+    description: 'Amplitude API key (or use AMPLITUDE_API_KEY secret)'
+    required: false
+  amplitude-secret-key:
+    description: 'Amplitude secret key for server-side API auth (or use AMPLITUDE_SECRET_KEY secret)'
+    required: false
+  server:
+    description: 'Amplitude server region'
+    required: false
+    default: 'standard'
+  version:
+    description: 'Release version (required by API). Product version for this release.'
+    required: false
+    default: ${{ github.ref_name }}
+  release_start:
+    description: 'Release start time in UTC. Format: yyyy-MM-dd HH:mm:ss'
+    required: false
+  release_end:
+    description: 'Release end time in UTC. Format: yyyy-MM-dd HH:mm:ss'
+    required: false
+  title:
+    description: 'Release name/title (required by API)'
+    required: false
+    default: ${{ github.event.release.name || github.ref_name }}
+  release-name:
+    description: 'Alias for title (use title for new workflows)'
+    required: false
+  description:
+    description: 'Release description'
+    required: false
+    default: ${{ github.event.release.body }}
+  platforms:
+    description: 'Comma-separated list of platforms (e.g. iOS,Android,Web)'
+    required: false
+  created_by:
+    description: 'Name of the user creating the release'
+    required: false
+    default: ${{ github.actor }}
+  chart_visibility:
+    description: 'Show release on Amplitude charts as annotation'
+    required: false
+    default: 'true'
+
+outputs:
+  reported:
+    description: 'Whether the release was reported to Amplitude'
+    value: ${{ steps.report.outputs.reported }}
+  release_id:
+    description: 'Amplitude release id from the API response'
+    value: ${{ steps.report.outputs.release_id }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Report release to Amplitude
+      id: report
+      env:
+        AMPLITUDE_API_KEY: ${{ inputs.amplitude-api-key }}
+        AMPLITUDE_SECRET_KEY: ${{ inputs.amplitude-secret-key }}
+        SERVER: ${{ inputs.server }}
+        VERSION: ${{ inputs.version }}
+        RELEASE_START: ${{ inputs.release_start }}
+        RELEASE_END: ${{ inputs.release_end }}
+        TITLE: ${{ inputs.title }}
+        RELEASE_NAME: ${{ inputs.release-name }}
+        DESCRIPTION: ${{ inputs.description }}
+        PLATFORMS: ${{ inputs.platforms }}
+        CREATED_BY: ${{ inputs.created_by }}
+        CHART_VISIBILITY: ${{ inputs.chart_visibility }}
+      run: |
+        set -e
+        if [ -z "$AMPLITUDE_API_KEY" ] || [ -z "$AMPLITUDE_SECRET_KEY" ]; then
+          echo "::warning::amplitude-api-key and amplitude-secret-key are required to report releases. Skipping."
+          echo "reported=false" >> "$GITHUB_OUTPUT"
+          echo "release_id=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        if [ "$SERVER" = "eu" ]; then
+          BASE_URL="https://analytics.eu.amplitude.com"
+        else
+          BASE_URL="https://amplitude.com"
+        fi
+
+        RELEASE_START="${RELEASE_START:-$(date -u '+%Y-%m-%d %H:%M:%S')}"
+        TITLE="${TITLE:-$RELEASE_NAME}"
+        CHART_VIS="${CHART_VISIBILITY:-true}"
+
+        # Build platforms JSON array from comma-separated list
+        if [ -n "$PLATFORMS" ]; then
+          PLATFORMS_JSON=$(echo "$PLATFORMS" | jq -R 'split(",") | map(gsub("^ +"; "") | gsub(" +$"; ""))')
+        else
+          PLATFORMS_JSON="[]"
+        fi
+
+        # Build JSON payload per https://amplitude.com/docs/apis/analytics/releases
+        BODY=$(jq -n \
+          --arg version "$VERSION" \
+          --arg release_start "$RELEASE_START" \
+          --arg release_end "$RELEASE_END" \
+          --arg title "$TITLE" \
+          --arg description "$DESCRIPTION" \
+          --arg created_by "$CREATED_BY" \
+          --arg chart_visibility "$CHART_VIS" \
+          --argjson platforms "$PLATFORMS_JSON" \
+          '.version = $version | .release_start = $release_start | .title = $title | .chart_visibility = ($chart_visibility == "true") | .platforms = $platforms | if $release_end != "" then .release_end = $release_end else . end | if $description != "" then .description = $description else . end | if $created_by != "" then .created_by = $created_by else . end')
+
+        AUTH=$(echo -n "${AMPLITUDE_API_KEY}:${AMPLITUDE_SECRET_KEY}" | base64)
+        RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/2/release" \
+          -H "Authorization: Basic $AUTH" \
+          -H "Content-Type: application/json" \
+          -d "$BODY")
+
+        HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
+        HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
+
+        if [ "$HTTP_CODE" != "200" ]; then
+          echo "::error::Amplitude Releases API returned $HTTP_CODE: $HTTP_BODY"
+          exit 1
+        fi
+
+        RELEASE_ID=$(echo "$HTTP_BODY" | jq -r '.release.id // empty')
+        echo "reported=true" >> "$GITHUB_OUTPUT"
+        echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
+        echo "Release created in Amplitude (id: $RELEASE_ID)"
+      shell: bash
