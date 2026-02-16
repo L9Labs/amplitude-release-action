@@ -114,10 +114,19 @@ runs:
           '.version = $version | .release_start = $release_start | .title = $title | .chart_visibility = ($chart_visibility == "true") | .platforms = $platforms | if $release_end != "" then .release_end = $release_end else . end | if $description != "" then .description = $description else . end | if $created_by != "" then .created_by = $created_by else . end')
 
         AUTH=$(echo -n "${AMPLITUDE_API_KEY}:${AMPLITUDE_SECRET_KEY}" | base64)
+        set +e
         RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/2/release" \
           -H "Authorization: Basic $AUTH" \
           -H "Content-Type: application/json" \
           -d "$BODY")
+        CURL_EXIT=$?
+        set -e
+
+        if [ "$CURL_EXIT" != "0" ]; then
+          echo "::error::curl failed with exit code $CURL_EXIT (e.g. 43 = write error). Check network and Amplitude API availability."
+          echo "::error::Response so far: ${RESPONSE:-(none)}"
+          exit 1
+        fi
 
         HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
         HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
@@ -127,7 +136,14 @@ runs:
           exit 1
         fi
 
+        set +e
         RELEASE_ID=$(echo "$HTTP_BODY" | jq -r '.release.id // empty')
+        JQ_EXIT=$?
+        set -e
+        if [ "$JQ_EXIT" != "0" ]; then
+          echo "::error::Amplitude returned 200 but response was not valid JSON. Body: $HTTP_BODY"
+          exit 1
+        fi
         echo "reported=true" >> "$GITHUB_OUTPUT"
         echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
         echo "Release created in Amplitude (id: $RELEASE_ID)"
