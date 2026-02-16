@@ -1,6 +1,6 @@
 name: 'Amplitude Release'
 description: 'Track releases in Amplitude via the Releases API (reusable GitHub Action for the Marketplace)'
-author: 'Skyway'
+author: 'Duckbill'
 branding:
   icon: 'bar-chart-2'
   color: 'blue'
